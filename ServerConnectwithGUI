@@ -1,0 +1,155 @@
+import requests
+import json
+import tkinter as tk
+from tkinter import scrolledtext, END
+#import speech_recognition as sr
+import pyttsx3
+import piper-tts
+
+# Your API key and LLM endpoint
+API_KEY = "-Y5CarrOGyQPEYMLWMcAJ6OGhVkM80qh044H5Uuril8"
+URL = "https://192.168.86.105:5001/api/chat"
+
+# Initialize conversation history and text-to-speech engine
+conversation_history = []
+tts_engine = pyttsx3.init()
+
+
+def send_message_to_llm(user_message):
+    """Send a message to the LLM and get a response."""
+    global conversation_history
+
+    # Add the user's message to the conversation history
+    conversation_history.append({"role": "user", "content": user_message})
+
+    try:
+        # Send the POST request to the LLM
+        response = requests.post(
+            URL,
+            json={
+                "model": "llama3.2",
+                "messages": conversation_history,
+                "stream": False
+            },
+            headers={"X-API-Key": API_KEY},
+            verify=False
+        )
+
+        # Check if the response was successful
+        response.raise_for_status()
+
+        # Parse the JSON response
+        json_response = response.json()
+
+        # Extract the assistant's response
+        if 'message' in json_response and 'content' in json_response['message']:
+            llm_message = json_response['message']['content']
+            # Add the LLM's response to the conversation history
+            conversation_history.append({"role": "assistant", "content": llm_message})
+            return llm_message
+        else:
+            return "Error: Response format is unexpected."
+    except requests.exceptions.RequestException as e:
+        return f"Request error: {e}"
+    except json.JSONDecodeError:
+        return "Error decoding the response from the LLM."
+
+
+def send_message(event=None):
+    """Handle sending a message from the user."""
+    user_message = user_input.get()
+    if user_message.strip() == "":
+        return
+
+    # Display the user's message in the chat window
+    chat_display.config(state=tk.NORMAL)
+    chat_display.insert(END, f"You: {user_message}\n")
+    chat_display.config(state=tk.DISABLED)
+    chat_display.see(END)
+
+    # Clear the input box
+    user_input.delete(0, END)
+
+    # Get the response from the LLM
+    llm_response = send_message_to_llm(user_message)
+
+    # Display the LLM's response in the chat window
+    chat_display.config(state=tk.NORMAL)
+    chat_display.insert(END, f"Assistant: {llm_response}\n")
+    chat_display.config(state=tk.DISABLED)
+    chat_display.see(END)
+
+    # Speak the response
+    speak_response(llm_response)
+
+
+def speak_response(text):
+    """Convert text to speech."""
+    tts_engine.say(text)
+    tts_engine.runAndWait()
+
+
+def listen_to_user():
+    """Capture voice input and send it as a message."""
+    recognizer = sr.Recognizer()
+
+    with sr.Microphone() as source:
+        chat_display.config(state=tk.NORMAL)
+        chat_display.insert(END, "Listening...\n")
+        chat_display.config(state=tk.DISABLED)
+        chat_display.see(END)
+
+        try:
+            # Adjust for ambient noise and capture voice
+            recognizer.adjust_for_ambient_noise(source)
+            audio = recognizer.listen(source)
+            user_message = recognizer.recognize_google(audio)
+
+            # Display the captured voice input in the chat
+            chat_display.config(state=tk.NORMAL)
+            chat_display.insert(END, f"You (via voice): {user_message}\n")
+            chat_display.config(state=tk.DISABLED)
+            chat_display.see(END)
+
+            # Send the captured voice input
+            send_message_to_llm(user_message)
+        except sr.UnknownValueError:
+            chat_display.config(state=tk.NORMAL)
+            chat_display.insert(END, "Could not understand your voice. Please try again.\n")
+            chat_display.config(state=tk.DISABLED)
+            chat_display.see(END)
+        except sr.RequestError as e:
+            chat_display.config(state=tk.NORMAL)
+            chat_display.insert(END, f"Error with the speech recognition service: {e}\n")
+            chat_display.config(state=tk.DISABLED)
+            chat_display.see(END)
+
+
+# Create the GUI window
+root = tk.Tk()
+root.title("Voice-Enabled Chatbot")
+root.geometry("500x600")
+
+# Chat display (scrollable text area)
+chat_display = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED, font=("Arial", 12))
+chat_display.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+# User input field
+user_input_frame = tk.Frame(root)
+user_input_frame.pack(pady=10, fill=tk.X, padx=10)
+
+user_input = tk.Entry(user_input_frame, font=("Arial", 14))
+user_input.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+# Bind the "Enter" key to send a message
+user_input.bind("<Return>", send_message)
+
+send_button = tk.Button(user_input_frame, text="Send", command=send_message, font=("Arial", 12))
+send_button.pack(side=tk.RIGHT)
+
+# Voice input button
+voice_button = tk.Button(root, text="Speak", command=listen_to_user, font=("Arial", 12))
+voice_button.pack(pady=10)
+
+# Run the main loop
+root.mainloop()
