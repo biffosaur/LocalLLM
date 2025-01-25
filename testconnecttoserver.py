@@ -1,7 +1,7 @@
 import requests
 import json
 
-API_KEY = "-Y5CarrOGyQPEYMLWMcAJ6OGhVkM80qh044H5Uuril8"  # The key printed when starting the server
+API_KEY = ""  # The key printed when starting the server
 URL = "https://192.168.86.105:5001/api/chat"
 
 response = requests.post(
