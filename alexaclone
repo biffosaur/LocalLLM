@@ -1,0 +1,220 @@
+import os
+import time
+import signal
+import sys
+import sounddevice as sd
+import numpy as np
+import scipy.io.wavfile as wav
+import whisper
+import pyttsx3
+from ollama import chat
+
+
+class OllamaWhisperAssistant:
+    def __init__(self, model_name="llama3.2", whisper_model="base", wake_word="computer", verbose=True):
+        """
+        Initialize the voice assistant with Whisper for speech recognition and Ollama for LLM.
+
+        Args:
+            model_name (str): Name of the Ollama model to use
+            whisper_model (str): Size of Whisper model ('tiny', 'base', 'small', 'medium', 'large')
+            wake_word (str): Word to activate the assistant (default: "computer")
+            verbose (bool): Whether to print debug information
+        """
+        self.model_name = model_name
+        self.wake_word = wake_word.lower()
+        self.verbose = verbose
+
+        # Initialize Whisper
+        self.log(f"Loading Whisper {whisper_model} model... this may take a moment.")
+        self.whisper = whisper.load_model(whisper_model)
+        self.log("Whisper model loaded successfully.")
+
+        # Audio recording settings
+        self.sample_rate = 16000
+        self.duration = 5  # recording duration in seconds
+
+        # Initialize text-to-speech engine
+        self.engine = pyttsx3.init()
+        self.voices = self.engine.getProperty('voices')
+        self.engine.setProperty('voice', self.voices[1].id)  # Set to female voice
+        self.engine.setProperty('rate', 175)  # Adjust speaking rate
+
+        # Conversation history
+        self.conversation = []
+
+        # Create a temp folder if it doesn't exist
+        self.temp_dir = os.path.join(os.getcwd(), "temp_audio")
+        if not os.path.exists(self.temp_dir):
+            os.makedirs(self.temp_dir)
+
+        # Setup signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+        self.log(f"Voice Assistant initialized with models: {model_name} (LLM), {whisper_model} (Speech)")
+        self.log(f"Wake word: '{wake_word}'")
+
+    def log(self, message):
+        """Print message if verbose mode is enabled"""
+        if self.verbose:
+            print(message)
+
+    def speak(self, text):
+        """Convert text to speech"""
+        self.log(f"Assistant: {text}")
+        self.engine.say(text)
+        self.engine.runAndWait()
+
+    def record_audio(self):
+        """Record audio from microphone"""
+        self.log("Listening...")
+
+        # Record audio
+        recording = sd.rec(int(self.duration * self.sample_rate),
+                           samplerate=self.sample_rate,
+                           channels=1,
+                           dtype='float32')
+        sd.wait()  # Wait until recording is finished
+
+        # Save to temporary WAV file for Whisper with absolute path
+        temp_file = os.path.join(self.temp_dir, f"recording_{time.time()}.wav")
+
+        # Convert float32 values to int16 format that's compatible with WAV files
+        # Normalize and convert to int16
+        audio_int16 = (recording * 32767).astype(np.int16)
+
+        # Write to file
+        wav.write(temp_file, self.sample_rate, audio_int16)
+
+        # Verify file exists
+        if not os.path.exists(temp_file):
+            self.log(f"Error: Could not create audio file at {temp_file}")
+            return None
+
+        self.log(f"Audio recorded to {temp_file}")
+        return temp_file
+
+    def transcribe_audio(self, audio_file):
+        """Use Whisper to transcribe speech to text"""
+        if not audio_file:
+            return ""
+
+        try:
+            self.log(f"Transcribing file: {audio_file}")
+            if not os.path.exists(audio_file):
+                self.log(f"Error: Audio file does not exist: {audio_file}")
+                return ""
+
+            # Use Whisper to transcribe the audio file directly
+            result = self.whisper.transcribe(audio_file)
+            text = result["text"].strip().lower()
+
+            # Clean up temporary file
+            try:
+                os.remove(audio_file)
+            except Exception as e:
+                self.log(f"Warning: Could not remove temporary file {audio_file}: {e}")
+
+            if text:
+                self.log(f"User: {text}")
+            return text
+        except Exception as e:
+            self.log(f"Transcription error: {e}")
+            return ""
+
+    def ask_ollama(self, query):
+        """Send query to Ollama and get response"""
+        try:
+            # Add user message to conversation history
+            self.conversation.append({
+                'role': 'user',
+                'content': query,
+            })
+
+            # Get response from Ollama
+            self.log("Thinking...")
+            response = chat(self.model_name, messages=self.conversation)
+
+            # Add assistant response to conversation history
+            self.conversation.append(response['message'])
+
+            return response['message']['content']
+        except Exception as e:
+            self.log(f"Error communicating with Ollama: {e}")
+            return "Sorry, I encountered an error while processing your request."
+
+    def signal_handler(self, sig, frame):
+        """Handle Ctrl+C to exit gracefully"""
+        print("\nExiting voice assistant...")
+        sys.exit(0)
+
+    def run(self):
+        """Main loop for the voice assistant"""
+        self.speak(
+            f"Hello! I'm your voice assistant powered by {self.model_name}. Say '{self.wake_word}' to activate me.")
+
+        listening_for_wake_word = True
+
+        while True:
+            try:
+                # Record audio
+                audio_file = self.record_audio()
+
+                # Transcribe audio
+                text = self.transcribe_audio(audio_file)
+
+                if not text:
+                    continue
+
+                if listening_for_wake_word:
+                    # Check if wake word was spoken
+                    if self.wake_word in text:
+                        self.speak("Yes, how can I help you?")
+                        listening_for_wake_word = False
+                else:
+                    # Process the command
+                    if any(word in text for word in ["exit", "quit", "stop", "goodbye"]):
+                        self.speak("Goodbye!")
+                        break
+
+                    # Get response from Ollama
+                    response = self.ask_ollama(text)
+                    self.speak(response)
+
+                    # Reset to listen for wake word again
+                    listening_for_wake_word = True
+
+            except Exception as e:
+                self.log(f"Error: {e}")
+                continue
+
+
+# Run the assistant if script is executed directly
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Voice Assistant powered by Ollama and Whisper")
+    parser.add_argument("--model", type=str, default="llama3.2", help="Ollama model name")
+    parser.add_argument("--whisper-model", type=str, default="base",
+                        choices=["tiny", "base", "small", "medium", "large"],
+                        help="Whisper model size (larger = more accurate but slower)")
+    parser.add_argument("--wake-word", type=str, default="computer", help="Wake word to activate assistant")
+    parser.add_argument("--quiet", action="store_true", help="Disable verbose logging")
+
+    args = parser.parse_args()
+
+    assistant = OllamaWhisperAssistant(
+        model_name=args.model,
+        whisper_model=args.whisper_model,
+        wake_word=args.wake_word,
+        verbose=not args.quiet
+    )
+
+    print(f"Voice Assistant started. Say '{args.wake_word}' to begin.")
+    print("Say 'exit', 'quit', 'stop', or 'goodbye' to end the session.")
+    print("Press Ctrl+C to exit.")
+
+    try:
+        assistant.run()
+    except KeyboardInterrupt:
+        print("\nExiting voice assistant...")
